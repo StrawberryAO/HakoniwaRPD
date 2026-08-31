@@ -34,20 +34,26 @@ class _InstallWorker(QThread):
     progress = Signal(str)
     done = Signal(bool)   # True=成功
 
+    def __init__(self, target_dir=None):
+        super().__init__()
+        self._target = target_dir
+
     def run(self):
-        ok = dependency_check.install_missing(on_output=self.progress.emit) == 0
+        ok = dependency_check.install_missing(on_output=self.progress.emit, target_dir=self._target) == 0
         self.done.emit(ok)
 
 
 class _InstallDialog(QDialog):
     """依赖安装进度对话框（实时滚动日志）。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, target_dir=None):
         super().__init__(parent)
+        self._target = target_dir
         self.setWindowTitle("正在安装可选依赖")
         self.resize(520, 360)
         layout = QVBoxLayout(self)
-        self._status = QLabel("正在通过国内镜像源安装（torch CPU 版 + chromadb + sentence-transformers）…")
+        note = "到程序目录 _deps 文件夹" if target_dir else "到当前 Python 环境"
+        self._status = QLabel(f"正在通过国内镜像源安装 {note}（torch CPU 版 + chromadb + sentence-transformers）…")
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
         self._log = QPlainTextEdit()
@@ -59,7 +65,7 @@ class _InstallDialog(QDialog):
         self._worker = None
 
     def start(self):
-        self._worker = _InstallWorker()
+        self._worker = _InstallWorker(target_dir=self._target)
         self._worker.progress.connect(self._append)
         self._worker.done.connect(self._on_done)
         self._worker.start()
@@ -80,30 +86,31 @@ class _InstallDialog(QDialog):
 
 
 def _check_optional_dependencies(app) -> None:
-    """首次启动：检测 L1 记忆 / 漂移检测依赖，缺失时询问并自动安装。"""
+    """首次启动：检测 L1 记忆 / 漂移检测依赖，缺失时询问并自动安装。
+
+    - 源码运行：安装到当前 Python 环境；
+    - exe 运行：先把 exe 旁 _deps 目录加入 sys.path（若已存在则直接可用），
+      仍缺失时询问并安装到 exe 旁 _deps 目录（不依赖用户是否装有 Python）。
+    """
+    dependency_check.ensure_deps_on_path()
     missing = dependency_check.missing_packages()
     if not missing:
         return
     names = "、".join(missing)
-    if dependency_check.is_frozen():
-        # 打包 exe：无法 pip 进冻结环境，仅提示
-        QMessageBox.information(
-            None, "可选依赖缺失",
-            f"当前 exe 精简版不含 L1 长期记忆与角色漂移检测依赖（{names}），\n"
-            "相关功能已自动降级。如需完整功能，请使用源码运行（python main.py）。",
-        )
-        return
+    target = dependency_check.deps_dir()
+    where = "程序目录下的 _deps 文件夹（不影响你的系统 Python）" if target else "当前 Python 环境"
     ret = QMessageBox.question(
         None, "检测到可选依赖缺失",
         f"检测到 L1 长期记忆与角色漂移检测所需的依赖未安装：\n{names}\n\n"
-        "是否现在通过国内镜像源自动安装？\n（torch 为 CPU 版，约数百 MB，需几分钟）\n\n"
+        f"是否现在通过国内镜像源自动安装到：{where}？\n"
+        "（torch 为 CPU 版，约数百 MB，需几分钟）\n\n"
         "选择「否」将跳过，相关功能自动降级，之后也可手动安装。",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.Yes,
     )
     if ret != QMessageBox.StandardButton.Yes:
         return
-    dialog = _InstallDialog()
+    dialog = _InstallDialog(target_dir=target)
     dialog.show()
     dialog.start()
 

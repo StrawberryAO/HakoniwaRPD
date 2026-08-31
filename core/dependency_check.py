@@ -5,6 +5,7 @@
 打包为 exe（frozen）时无法把依赖 pip 进冻结环境，仅提示、不提供安装。
 """
 import importlib.util
+import os
 import subprocess
 import sys
 
@@ -35,26 +36,46 @@ def missing_packages() -> list:
     return [name for name, ok in check_available().items() if not ok]
 
 
-def install_missing(on_output=None) -> int:
-    """自动安装缺失的可选依赖，返回退出码（0=成功）。"""
+def deps_dir() -> str:
+    """exe 运行时返回"exe 旁 _deps 依赖目录"；源码运行时返回 None（用当前环境）。"""
+    if is_frozen():
+        return os.path.join(os.path.dirname(sys.executable), "_deps")
+    return None
+
+
+def ensure_deps_on_path() -> None:
+    """exe 启动时把 exe 旁的 _deps 目录加入 sys.path，使安装到该目录的库可被导入。"""
+    d = deps_dir()
+    if d and os.path.isdir(d) and d not in sys.path:
+        sys.path.insert(0, d)
+
+
+def install_missing(on_output=None, target_dir=None) -> int:
+    """自动安装缺失的可选依赖，返回退出码（0=成功）。
+
+    Args:
+        on_output: 日志回调。
+        target_dir: 指定 pip --target 安装目录（exe 场景装到 exe 旁 _deps）；
+                    为 None 时装入当前 Python 环境。
+    """
     missing = missing_packages()
     if not missing:
         return 0
     python = sys.executable
 
+    def pip_cmd():
+        cmd = [python, "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
+        if target_dir:
+            cmd += ["--target", target_dir]
+        return cmd
+
     commands = []
     # 1) 需要 sentence-transformers 时，先装 CPU 版 torch（避免默认 CUDA 版体积巨大）
     if "sentence_transformers" in missing:
-        commands.append([
-            python, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-            "torch", "--index-url", TORCH_CPU_INDEX,
-        ])
+        commands.append(pip_cmd() + ["torch", "--index-url", TORCH_CPU_INDEX])
     # 2) 通过清华镜像安装 chromadb / sentence-transformers
     pkgs = [OPTIONAL_PACKAGES[name] for name in missing]
-    commands.append([
-        python, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-        "-i", PYPI_MIRROR,
-    ] + pkgs)
+    commands.append(pip_cmd() + ["-i", PYPI_MIRROR] + pkgs)
 
     for cmd in commands:
         if on_output:
