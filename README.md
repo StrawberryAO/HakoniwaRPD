@@ -57,7 +57,8 @@ python main.py
 **方式 B —— 直接运行**
 
 下载 Releases 中的 `Hakoniwa-win64.zip`，解压后双击 `Hakoniwa.exe` 即可。
-（exe 为精简版：核心功能完整；L1 记忆 / 漂移检测因打包体积限制默认降级。）
+exe 首次启动若检测到 L1 记忆 / 漂移检测依赖缺失，会**询问并通过国内镜像源自动安装**
+到程序目录 `_deps` 文件夹（不影响你的系统 Python），重启后即可使用完整功能。
 
 ## 🎮 使用流程
 
@@ -116,9 +117,12 @@ python main.py
 pip install chromadb sentence-transformers
 ```
 
-首次启动程序会自动检测缺失并询问是否**通过国内镜像源**自动安装（torch 自动用 CPU 版）。
-嵌入模型默认 `BAAI/bge-small-zh-v1.5`（可改 `embedding.model`），向量数据存 `data/chroma/`。
-不安装时，L1 记忆、锚点、OOC 检测静默降级，不影响核心对话。
+- **源码运行**：首次启动自动检测缺失，询问后**通过国内镜像源**自动安装（torch 自动用
+  CPU 版，约 400 MB，安装前会提示体积）。
+- **exe 运行**：同样会询问并自动安装到程序目录 `_deps` 文件夹（不影响系统 Python），
+  重启后生效。
+- 嵌入模型默认 `BAAI/bge-small-zh-v1.5`（可改 `embedding.model`），向量数据存 `data/chroma/`。
+- 不安装时，L1 记忆、锚点、OOC 检测静默降级，不影响核心对话。
 
 ## 🔊 TTS 语音（GPT-SoVITS，可选）
 

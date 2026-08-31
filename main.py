@@ -99,11 +99,12 @@ def _check_optional_dependencies(app) -> None:
     names = "、".join(missing)
     target = dependency_check.deps_dir()
     where = "程序目录下的 _deps 文件夹（不影响你的系统 Python）" if target else "当前 Python 环境"
+    size_text = dependency_check.size_estimate_text(missing)
     ret = QMessageBox.question(
         None, "检测到可选依赖缺失",
         f"检测到 L1 长期记忆与角色漂移检测所需的依赖未安装：\n{names}\n\n"
+        f"{size_text}\n"
         f"是否现在通过国内镜像源自动安装到：{where}？\n"
-        "（torch 为 CPU 版，约数百 MB，需几分钟）\n\n"
         "选择「否」将跳过，相关功能自动降级，之后也可手动安装。",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.Yes,

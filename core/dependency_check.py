@@ -20,6 +20,30 @@ OPTIONAL_PACKAGES = {
     "sentence_transformers": "sentence-transformers>=2.2.0",
 }
 
+# 各依赖预计下载体积（粗略估算，用于安装前提示）
+PACKAGE_SIZES = {
+    "torch": "约 200 MB",
+    "chromadb": "约 80 MB",
+    "sentence_transformers": "约 120 MB（含 transformers 等依赖）",
+}
+
+
+def size_estimate_text(missing: list) -> str:
+    """根据缺失依赖生成安装体积提示文本（如"torch CPU 版约 200MB + chromadb 约 80MB…"）。"""
+    if not missing:
+        return ""
+    parts = []
+    total_mb = 0
+    if "sentence_transformers" in missing:
+        parts.append(f"torch CPU 版{PACKAGE_SIZES['torch']}")
+        total_mb += 200
+        parts.append(f"sentence-transformers{PACKAGE_SIZES['sentence_transformers']}")
+        total_mb += 120
+    if "chromadb" in missing:
+        parts.append(f"chromadb{PACKAGE_SIZES['chromadb']}")
+        total_mb += 80
+    return "预计下载约 " + " + ".join(parts) + f"（合计约 {total_mb} MB，需几分钟）"
+
 
 def is_frozen() -> bool:
     """是否运行在 PyInstaller 打包环境中（exe）。"""
