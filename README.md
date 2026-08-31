@@ -1,11 +1,11 @@
-# Hakoniwa（箱庭）—— 智能角色扮演桌面宠物
+# HakoniwaRPD —— 智能角色扮演桌面宠物
 
 一个悬浮在你桌面上的 AI 伙伴：只需输入 **角色名** + **作品名**，程序自动调用大模型 API，
 生成详尽且结构化的角色设定（人设提示词、L2 核心记忆、Worldbook 世界观等），
 宠物随即逼真地扮演该角色。风格参考 [Cyrene-Agent](https://github.com/Playa-0v0/Cyrene-Agent)，
 聚焦**沉浸式角色扮演**与**长期陪伴**。
 
-“箱庭”（Hakoniwa）——桌面上一个小小的、只属于你和角色的微缩世界。
+Hakoniwa(“箱庭”) —— 桌面上一个小小的、只属于你和角色的微缩世界。
 
 ## ✨ 特性
 
@@ -50,15 +50,14 @@ set DEEPSEEK_API_KEY=sk-xxxxxx              # Windows
 python main.py
 ```
 
-> `config.json` 已被 `.gitignore` 排除（内含 API Key，请勿提交）；
 > 首次无 `config.json` 时会自动套用 `config.example.json` 模板。
-> 默认使用 DeepSeek（`deepseek-v4-flash`），可在 设置 → 全局设置 改为本地 Ollama。
+> 默认使用 DeepSeek（`deepseek-v4-flash`），可在 设置 → 全局设置 改为本地 Ollama 或 根据其他模型的接口档案自行接入。
 
 **方式 B —— 直接运行**
 
 下载 Releases 中的 `Hakoniwa-win64.zip`，解压后双击 `Hakoniwa.exe` 即可。
 exe 首次启动若检测到 L1 记忆 / 漂移检测依赖缺失，会**询问并通过国内镜像源自动安装**
-到程序目录 `_deps` 文件夹（不影响你的系统 Python），重启后即可使用完整功能。
+到程序目录 `_deps` 文件夹，重启后即可使用完整功能。
 
 ## 🎮 使用流程
 
@@ -130,11 +129,6 @@ pip install chromadb sentence-transformers
 2. 训练并导出音色模型。
 3. 在角色编辑器把 **TTS 语音包文件夹** 指向包含参考音频（wav/mp3/flac）的目录。
 4. 服务不可达 / 未配置时自动降级为纯文本，无任何报错。
-
-## 📦 打包（PyInstaller）
-
-双击项目根目录 `build.bat` 即可（生成 `dist/Hakoniwa/`，内含 `Hakoniwa.exe`）。
-打包后把 `config.json`、`characters/` 复制到 exe 同目录。可选依赖默认排除以减小体积。
 
 ## 🗂️ 项目结构
 
