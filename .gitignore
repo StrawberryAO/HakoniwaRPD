@@ -34,3 +34,7 @@ Thumbs.db
 # ===== 临时文件 =====
 *.log
 tmp/
+
+# ===== Release 资产（体积大，不走 git，通过 GitHub Releases 上传）=====
+*.zip
+release_tmp/
