@@ -1,0 +1,59 @@
+{
+  "llm": {
+    "backend": "openai",
+    "context_window": 1048576,
+    "thinking_chat": false,
+    "thinking_generate": true,
+    "openai": {
+      "api_key": "",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-v4-flash",
+      "timeout": 90
+    },
+    "ollama": {
+      "base_url": "http://127.0.0.1:11434",
+      "model": "qwen2.5:7b",
+      "timeout": 180
+    },
+    "chat_style": "concise"
+  },
+  "embedding": {
+    "model": "BAAI/bge-small-zh-v1.5",
+    "device": "cpu"
+  },
+  "hf": {
+    "endpoint": "https://hf-mirror.com",
+    "cache_dir": "models/hub"
+  },
+  "chat": {
+    "context_ratio": 0.8,
+    "drift_threshold": 0.72,
+    "max_ooc_retries": 1
+  },
+  "web_search": {
+    "enabled": true,
+    "engine": "auto",
+    "top_k": 5,
+    "timeout": 15
+  },
+  "initiative": {
+    "enabled": true,
+    "interval_minutes": 15,
+    "idle_minutes": 15
+  },
+  "tts": {
+    "enabled": false,
+    "sovits_url": "http://127.0.0.1:9880"
+  },
+  "window": {
+    "opacity": 0.92,
+    "auto_hide": true,
+    "always_on_top": false,
+    "pet_image": "",
+    "user_avatar": "",
+    "chat_bg": ""
+  },
+  "storage": {
+    "chroma_dir": "data/chroma"
+  }
+}

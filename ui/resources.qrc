@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  UI 资源文件（可选）。
+
+  当前版本所有图标/动画均为代码绘制占位，不依赖编译后的资源。
+  如需自定义宠物动画，请把 GIF 放入 ui/assets/ 目录并在下面注册：
+
+      <file alias="pet_idle.gif">assets/pet_idle.gif</file>
+
+  然后在 ui/pet_window.py 的 PetWidget 中改为：
+      self._movie = QMovie(":/pet_idle.gif")
+      label.setMovie(self._movie); label.setMovie(...); self._movie.start()
+
+  编译命令（可选）：pyside6-rcc ui/resources.qrc -o ui/resources_rc.py
+-->
+<RCC>
+    <qresource prefix="/">
+        <!-- <file alias="pet_idle.gif">assets/pet_idle.gif</file> -->
+        <!-- <file alias="pet_speaking.gif">assets/pet_speaking.gif</file> -->
+    </qresource>
+</RCC>

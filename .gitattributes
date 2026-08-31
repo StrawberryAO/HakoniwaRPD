@@ -1,0 +1,4 @@
+# 统一换行符：源码用 LF，批处理保留 CRLF（Windows 需要）
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
