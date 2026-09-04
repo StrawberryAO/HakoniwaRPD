@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from core import constants
 from core.character_manager import Character, GenerationError
 from core.drift_detector import DriftDetector
 from core.llm_backends import LLMError, create_backend
@@ -241,7 +242,7 @@ class SettingsDialog(QDialog):
         self._api_key.setText(openai.get("api_key", ""))
         self._base_url.setText(openai.get("base_url", ""))
         self._model.setText(openai.get("model", ""))
-        self._ctx_window.setValue(int(llm.get("context_window", 8192)))
+        self._ctx_window.setValue(int(llm.get("context_window", constants.DEFAULT_CONTEXT_WINDOW)))
         self._thinking_chat_check.setChecked(bool(llm.get("thinking_chat", False)))
         self._thinking_generate_check.setChecked(bool(llm.get("thinking_generate", True)))
         idx = self._chat_style_combo.findData(llm.get("chat_style", "concise"))
@@ -249,12 +250,12 @@ class SettingsDialog(QDialog):
         self._ollama_url.setText(ollama.get("base_url", ""))
         self._ollama_model.setText(ollama.get("model", ""))
         self._embedding_model.setText(emb.get("model", ""))
-        self._drift_threshold.setValue(float(chat.get("drift_threshold", 0.75)))
-        self._ooc_retries.setValue(int(chat.get("max_ooc_retries", 1)))
+        self._drift_threshold.setValue(float(chat.get("drift_threshold", constants.DEFAULT_DRIFT_THRESHOLD)))
+        self._ooc_retries.setValue(int(chat.get("max_ooc_retries", constants.DEFAULT_MAX_OOC_RETRIES)))
         self._init_enabled.setChecked(bool(init.get("enabled", True)))
         self._init_interval.setValue(int(init.get("interval_minutes", 15)))
-        self._init_idle.setValue(int(init.get("idle_minutes", 10)))
-        self._tts_enabled.setChecked(bool(tts.get("enabled", True)))
+        self._init_idle.setValue(int(init.get("idle_minutes", constants.DEFAULT_IDLE_MINUTES)))
+        self._tts_enabled.setChecked(bool(tts.get("enabled", constants.DEFAULT_TTS_ENABLED)))
         self._sovits_url.setText(tts.get("sovits_url", ""))
         self._opacity.setValue(float(win.get("opacity", 0.92)))
         self._auto_hide.setChecked(bool(win.get("auto_hide", True)))
@@ -290,6 +291,9 @@ class SettingsDialog(QDialog):
         self.config.set(self._topmost_check.isChecked(), "window", "always_on_top")
         self.config.set(self._user_avatar_edit.text().strip(), "window", "user_avatar")
         self.config.set(self._chat_bg_edit.text().strip(), "window", "chat_bg")
+        if not self.config.save():
+            QMessageBox.warning(self, "设置", "全局设置保存失败，请检查 config.json 是否可写。")
+            return
         self.config_saved.emit()
         QMessageBox.information(self, "设置", "全局设置已保存。")
 
@@ -1154,10 +1158,3 @@ class SettingsDialog(QDialog):
     def _cleanup_task(self, thread: _TaskThread) -> None:
         if thread in self._tasks:
             self._tasks.remove(thread)
-
-    # ---------- 对外 ----------
-    def open_character_tab(self) -> None:
-        self._tabs.setCurrentIndex(1)
-        self.show()
-        self.raise_()
-        self.activateWindow()

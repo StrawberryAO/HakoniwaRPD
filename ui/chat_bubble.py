@@ -166,6 +166,7 @@ class _MessageItem(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
         outer.setSpacing(1)
+        self._center_label = None   # 居中样式（系统/错误/思考）的文本标签，供流式更新
 
         # 时间戳（居中灰色小字）
         if ts:
@@ -220,11 +221,18 @@ class _MessageItem(QWidget):
             label.setWordWrap(True)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setMaximumWidth(380)
+            label.setTextFormat(Qt.TextFormat.PlainText)
             label.setStyleSheet("color:%s; font-size:12px; background:transparent;" % color)
+            self._center_label = label
             row.addStretch(1)
             row.addWidget(label)
             row.addStretch(1)
         outer.addLayout(row)
+
+    def update_text(self, text: str) -> None:
+        """更新居中样式的文本（用于思考流式输出）；非居中消息为 no-op。"""
+        if self._center_label is not None:
+            self._center_label.setText(text)
 
 
 class ChatBubble(QWidget):
@@ -261,6 +269,7 @@ class ChatBubble(QWidget):
         self._char_cache = {}        # 角色名 -> Character（头像缓存用）
         self._thinking = False
         self._thinking_item = None
+        self._thinking_text = ""
         self._drag_offset = None
         self._loaded_role = None     # 当前已加载历史消息的角色
 
@@ -534,6 +543,7 @@ class ChatBubble(QWidget):
         if self._thinking and self._thinking_item is not None:
             self._thinking = False
             self._thinking_item = None
+            self._thinking_text = ""
         while self._msg_layout.count() > 1:   # 最后一项是 stretch
             item = self._msg_layout.takeAt(0)
             w = item.widget()
@@ -572,13 +582,31 @@ class ChatBubble(QWidget):
     def set_thinking(self, on: bool) -> None:
         if on and not self._thinking:
             self._thinking = True
-            self._thinking_item = self._add_message_item("", "…正在思考…", "thinking")
+            self._thinking_text = ""
+            self._thinking_item = self._add_message_item("", "正在输入…", "thinking")
         elif not on and self._thinking:
             self._thinking = False
+            self._thinking_text = ""
             if self._thinking_item is not None:
                 self._msg_layout.removeWidget(self._thinking_item)
                 self._thinking_item.deleteLater()
                 self._thinking_item = None
+
+    def set_thinking_text(self, char_name: str, piece: str) -> None:
+        """思考/回复流式输出：把增量文本实时追加到思考气泡（打字机效果）。"""
+        if not self._thinking or self._thinking_item is None or not piece:
+            return
+        self._thinking_text += piece
+        self._thinking_item.update_text(self._thinking_text)
+        self._scroll_to_bottom()
+
+    def reset_thinking(self, char_name: str) -> None:
+        """OOC 重试前清空已流式显示的文本，重新从空开始累积。"""
+        if not self._thinking:
+            return
+        self._thinking_text = ""
+        if self._thinking_item is not None:
+            self._thinking_item.update_text("")
 
     def set_status(self, data) -> None:
         """接收情绪/羁绊状态并渲染。

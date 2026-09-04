@@ -155,22 +155,26 @@ def main() -> int:
         pet.notify_activity()
         pet.set_state("speaking")
         QTimer.singleShot(2200, lambda: pet.set_state("idle"))
+        tts.stop_all()   # 打断上一段未播完的语音，避免串音
         try:
             char = manager.load(char_name)
-            tts.speak(reply, char)
-        except Exception:
-            pass
+        except Exception as exc:   # 角色加载失败不再静默吞掉
+            logger.warning("加载角色失败（%s）: %s", char_name, exc)
+            return
+        tts.speak(reply, char)
 
     def on_initiative_text(char_name: str, text: str) -> None:
         """主动搭话：气泡展示 + 记录 + 语音。"""
         pet.wake_for_initiative()
         pet.show_speech(text)
         bubble.append_message(char_name, text, kind="initiative")
+        tts.stop_all()
         try:
             char = manager.load(char_name)
-            tts.speak(text, char)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("加载角色失败（%s）: %s", char_name, exc)
+            return
+        tts.speak(text, char)
 
     def apply_character_image(name: str) -> None:
         """按角色加载宠物形象（空则回退全局默认）。"""
@@ -185,6 +189,7 @@ def main() -> int:
         bubble.set_active(name)
         pet.set_characters_menu(manager.list_characters(), name)
         apply_character_image(name)
+        tts.stop_all()   # 切换角色时停止旧角色语音
 
     def on_characters_changed() -> None:
         names = manager.list_characters()
@@ -192,6 +197,7 @@ def main() -> int:
         bubble.refresh_characters(names, active)
         pet.set_characters_menu(names, active)
         apply_character_image(active)
+        tts.stop_all()
 
     def on_config_saved() -> None:
         pet.apply_config()
@@ -209,8 +215,11 @@ def main() -> int:
     engine.reply_ready.connect(on_reply)
     engine.reply_error.connect(bubble.show_error)
     engine.state_changed.connect(lambda state: bubble.set_thinking(state == "thinking"))
+    engine.thinking_chunk.connect(bubble.set_thinking_text)
+    engine.thinking_reset.connect(bubble.reset_thinking)
     engine.status_updated.connect(bubble.set_status)
     engine.initiative_text.connect(on_initiative_text)
+    tts.failed.connect(lambda msg: bubble.show_error("语音播报不可用：" + msg))
 
     # 宠物窗
     pet.clicked.connect(show_bubble)

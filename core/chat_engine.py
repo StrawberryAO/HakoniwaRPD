@@ -20,6 +20,7 @@ import re
 
 from PySide6.QtCore import QObject, QThread, Signal
 
+from core import constants
 from core.drift_detector import DriftDetector
 from core.emotion_system import BondSystem, EmotionSystem
 from core.llm_backends import create_backend
@@ -70,6 +71,8 @@ class ChatEngine(QObject):
     state_changed = Signal(str)          # "thinking" | "idle"
     status_updated = Signal(object)      # 情绪/羁绊状态 dict: {"pad": [...], "bond": {...}}
     initiative_text = Signal(str, str)   # (character_name, text)
+    thinking_chunk = Signal(str, str)    # (character_name, 增量文本) 对话流式输出
+    thinking_reset = Signal(str)         # character_name，OOC 重试前清空已显示文本
 
     def __init__(self, config, manager, logger=None):
         super().__init__()
@@ -168,9 +171,19 @@ class ChatEngine(QObject):
         self.log.info("[%s] 请求 LLM (%s) ...", char_name, backend.name)
         # 聊天默认关闭思考模式（更快、更口语化、省 token），可在全局设置开启
         thinking_chat = bool(self.config.get("llm", "thinking_chat", default=False))
-        reply = backend.chat(messages, thinking=thinking_chat)
         from core.usage_tracker import add_usage
-        add_usage(backend.last_usage)
+
+        def _generate(msgs):
+            # 流式生成：逐块把增量文本发到 UI（打字机效果），失败/空时回退非流式
+            def on_chunk(piece):
+                self.thinking_chunk.emit(char_name, piece)
+            reply = backend.chat_stream(msgs, thinking=thinking_chat, on_chunk=on_chunk)
+            if not reply.strip():
+                reply = backend.chat(msgs, thinking=thinking_chat)
+            add_usage(backend.last_usage)
+            return reply
+
+        reply = _generate(messages)
 
         # ---- 角色漂移检测（事后校验 + 重试）----
         anchor = char.anchor_vector
@@ -184,8 +197,8 @@ class ChatEngine(QObject):
             anchor = self._drift.build_anchor(anchor_text)
             if anchor:
                 char.anchor_vector = anchor
-        threshold = float(self.config.get("chat", "drift_threshold", default=0.52))
-        max_retries = int(self.config.get("chat", "max_ooc_retries", default=1))
+        threshold = float(self.config.get("chat", "drift_threshold", default=constants.DEFAULT_DRIFT_THRESHOLD))
+        max_retries = int(self.config.get("chat", "max_ooc_retries", default=constants.DEFAULT_MAX_OOC_RETRIES))
         retried = 0
         while retried < max_retries:
             similarity, is_ooc = self._drift.check(reply, anchor, threshold)
@@ -194,9 +207,10 @@ class ChatEngine(QObject):
             self.log.info("[%s] 检测到 OOC（相似度 %.3f < %.3f），第 %d 次重试",
                           char_name, similarity or 0.0, threshold, retried + 1)
             retried += 1
+            self.thinking_reset.emit(char_name)
             messages.append({"role": "assistant", "content": reply})
             messages.append({"role": "system", "content": OOC_RETRY_MESSAGE})
-            reply = backend.chat(messages, thinking=thinking_chat)
+            reply = _generate(messages)
 
         # ---- 情绪/羁绊更新并持久化 ----
         emotion.update(reply, "assistant")
@@ -285,7 +299,7 @@ class ChatEngine(QObject):
         history = memory.recent_turns()
         messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": user_text}]
 
-        window = int(self.config.get("llm", "context_window", default=8192))
+        window = int(self.config.get("llm", "context_window", default=constants.DEFAULT_CONTEXT_WINDOW))
         ratio = float(self.config.get("chat", "context_ratio", default=0.8))
         budget = int(window * ratio)
         return self.trim_context(messages, budget)
@@ -434,17 +448,6 @@ class ChatEngine(QObject):
                 self.initiative_text.emit(char_name, text)
         except (TypeError, ValueError):
             pass
-
-    # ---------- 状态文本 ----------
-    @staticmethod
-    def _format_status(char) -> str:
-        pad = char.emotion.get("pad", [0.0, 0.0, 0.0])
-        bond = char.bond
-        return (
-            f"情绪 P{pad[0]:.2f} A{pad[1]:.2f} D{pad[2]:.2f} ｜ "
-            f"羁绊 温暖{bond.get('warmth', 0):.2f} 信任{bond.get('trust', 0):.2f} "
-            f"正式{bond.get('formality', 0):.2f} 幽默{bond.get('humor', 0):.2f}"
-        )
 
     # ---------- 工具 ----------
     @staticmethod

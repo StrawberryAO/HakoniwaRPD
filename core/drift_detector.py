@@ -3,7 +3,8 @@
 - 准备阶段：将角色 system_prompt 分段计算嵌入向量取均值，作为"角色锚点向量"，
   存入角色 JSON（character.anchor_vector）。
 - 每次 LLM 生成回复后，用同一嵌入模型计算回复向量，与锚点计算余弦相似度；
-  低于阈值（默认 0.75）判定 OOC，由 chat_engine 追加系统消息让模型重写（最多重试 1 次）。
+  低于阈值（默认 0.52，见 core.constants.DEFAULT_DRIFT_THRESHOLD）判定 OOC，
+  由 chat_engine 追加系统消息让模型重写（最多重试 1 次）。
 
 嵌入模型与 L1 记忆共用 memory_manager.EmbeddingProvider（sentence-transformers）。
 模型缺失时自动降级：不检测、不拦截，不影响对话。
@@ -11,6 +12,7 @@
 import math
 import re
 
+from core import constants
 from utils.logger import get_logger
 
 
@@ -73,7 +75,7 @@ class DriftDetector:
             return None
         return dot / (norm_a * norm_b)
 
-    def check(self, reply: str, anchor, threshold: float = 0.58):
+    def check(self, reply: str, anchor, threshold: float = constants.DEFAULT_DRIFT_THRESHOLD):
         """检测回复是否偏离角色设定。
 
         Returns:

@@ -74,6 +74,7 @@ class EmbeddingProvider:
         self.log = logger or get_logger()
         self._model = None
         self._failed = False
+        self._lock = threading.Lock()   # 实例锁：串行化懒加载与 encode（ST 非线程安全）
 
     @classmethod
     def get(cls, config, logger=None) -> "EmbeddingProvider":
@@ -90,19 +91,22 @@ class EmbeddingProvider:
     def is_available(self) -> bool:
         if self._model is not None:
             return True
-        if self._failed:
-            return False
-        if not _ST_OK:
-            self._failed = True
-            return False
-        try:
-            self.log.info("正在加载嵌入模型 %s ...", self.model_name)
-            self._model = SentenceTransformer(self.model_name, device=self.device)
-            return True
-        except Exception as exc:
-            self.log.warning("嵌入模型加载失败，L1 记忆/漂移检测降级: %s", exc)
-            self._failed = True
-            return False
+        with self._lock:
+            if self._model is not None:
+                return True
+            if self._failed:
+                return False
+            if not _ST_OK:
+                self._failed = True
+                return False
+            try:
+                self.log.info("正在加载嵌入模型 %s ...", self.model_name)
+                self._model = SentenceTransformer(self.model_name, device=self.device)
+                return True
+            except Exception as exc:
+                self.log.warning("嵌入模型加载失败，L1 记忆/漂移检测降级: %s", exc)
+                self._failed = True
+                return False
 
     def encode(self, texts) -> list:
         """将文本（或文本列表）编码为归一化向量列表。"""
@@ -112,7 +116,8 @@ class EmbeddingProvider:
             texts = [texts]
         if not texts:
             return []
-        vectors = self._model.encode(texts, normalize_embeddings=True)
+        with self._lock:
+            vectors = self._model.encode(texts, normalize_embeddings=True)
         return [v.tolist() for v in vectors]
 
 
