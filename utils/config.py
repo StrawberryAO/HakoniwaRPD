@@ -7,13 +7,17 @@ import copy
 import json
 import os
 
+from core import constants
+
+# 默认值一律取自 core.constants，杜绝「代码默认值」与「config.example.json 模板值」
+# 各自漂移。新增配置项请同时在两处登记，并由测试断言二者一致。
 DEFAULT_CONFIG = {
     "llm": {
         # 默认后端：openai（OpenAI 兼容，含 DeepSeek）或 ollama
         "backend": "openai",
         # 模型上下文窗口大小（token），用于上下文裁剪预算。
-        # 默认保守值；ds-v4 系列等大窗口模型可在设置中调到 1M（上限 2M）。
-        "context_window": 8192,
+        # 默认按 ds-v4 系列的大窗口设定为 1M（上限 2M）；小窗口模型可在设置中调低。
+        "context_window": constants.DEFAULT_CONTEXT_WINDOW,
         # 回复风格：concise 简洁日常（默认）| detailed 丰富长文
         "chat_style": "concise",
         # DeepSeek V4 思考模式开关：聊天/搭话默认关闭（更快更口语化），
@@ -23,7 +27,7 @@ DEFAULT_CONFIG = {
         "openai": {
             "api_key": "",
             "base_url": "https://api.deepseek.com/v1",
-            "model": "deepseek-chat",
+            "model": constants.DEFAULT_OPENAI_MODEL,
             "timeout": 90,
         },
         "ollama": {
@@ -40,7 +44,7 @@ DEFAULT_CONFIG = {
     "hf": {
         # HuggingFace 镜像端点（留空 = 官方 huggingface.co）。
         # 国内网络建议 https://hf-mirror.com，用于下载嵌入模型。
-        "endpoint": "",
+        "endpoint": constants.DEFAULT_HF_ENDPOINT,
         # 模型缓存目录（相对项目根，保证便携可写；默认官方用户目录时可留空）
         "cache_dir": "models/hub",
     },
@@ -50,9 +54,9 @@ DEFAULT_CONFIG = {
         # 角色漂移（OOC）判定阈值（余弦相似度）。
         # 按 bge-small-zh-v1.5 实测校准：锚点=人设+口头禅+台词+近期回复时，
         # 人设内回复约 0.53+，明显偏离约 0.43-0.53，默认 0.52 宁可漏检不误伤。
-        "drift_threshold": 0.52,
+        "drift_threshold": constants.DEFAULT_DRIFT_THRESHOLD,
         # OOC 时最大重试次数
-        "max_ooc_retries": 1,
+        "max_ooc_retries": constants.DEFAULT_MAX_OOC_RETRIES,
     },
     "web_search": {
         # 角色自动生成时的联网搜索（参考资料注入生成提示）
@@ -66,10 +70,10 @@ DEFAULT_CONFIG = {
         # 主动搭话引擎
         "enabled": True,
         "interval_minutes": 15,   # 每隔多少分钟检查一次
-        "idle_minutes": 10,       # 用户多久未说话视为"空闲"
+        "idle_minutes": constants.DEFAULT_IDLE_MINUTES,  # 用户多久未说话视为"空闲"
     },
     "tts": {
-        "enabled": True,
+        "enabled": constants.DEFAULT_TTS_ENABLED,
         # GPT-SoVITS 推理服务地址（api.py 默认 9880 端口）
         "sovits_url": "http://127.0.0.1:9880",
     },
@@ -146,12 +150,15 @@ class Config:
         if os.environ.get("DEEPSEEK_MODEL"):
             openai["model"] = os.environ["DEEPSEEK_MODEL"]
 
-    def save(self) -> None:
+    def save(self) -> bool:
+        """写盘；成功返回 True，失败打印原因并返回 False（供调用方弹窗提示，不再静默）。"""
         try:
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
+            return True
         except Exception as exc:
             print(f"[config] 保存配置失败: {exc}")
+            return False
 
     # ---------- 访问 ----------
     def get(self, *keys, default=None):
@@ -177,5 +184,5 @@ class Config:
         backend = llm.get("backend", "openai")
         block = copy.deepcopy(llm.get(backend, {}))
         block["backend"] = backend
-        block["context_window"] = llm.get("context_window", 8192)
+        block["context_window"] = llm.get("context_window", constants.DEFAULT_CONTEXT_WINDOW)
         return block

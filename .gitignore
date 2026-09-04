@@ -20,6 +20,11 @@ characters/*.json
 # 保留格式说明
 !characters/README.md
 
+# ===== 多智能体协作（Hy4 / Dsh 仅在本机协同，不对外）=====
+# .workbuddy/ 为工作区数据目录（非临时缓存，勿删），AGENT_LOG.md 为双方协同日志
+.workbuddy/
+AGENT_LOG.md
+
 # ===== 打包产物 =====
 build/
 dist/

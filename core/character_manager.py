@@ -6,6 +6,7 @@
 import datetime
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -140,6 +141,27 @@ class Character:
             self.created_at = _now_iso()
 
 
+# 角色名白名单：中英文、数字、下划线、连字符与空格，其余一律视为非法字符。
+_UNSAFE_NAME_CHARS = re.compile(r"[^\w\-\u4e00-\u9fff ]+")
+
+
+def _safe_name(name: str) -> str:
+    """把角色名归一化为安全的文件名，阻断路径穿越。
+
+    角色名来自 UI 输入框，直接拼路径会让 "../../evil" 之类的输入越出
+    characters/ 目录。此处把所有非白名单字符（含路径分隔符与点号）折叠为下划线，
+    使任何穿越尝试都退化成一个普通文件名。
+
+    Args:
+        name: 用户输入的角色名。
+
+    Returns:
+        安全文件名（不含扩展名）。全非法时回退 "_unnamed"。
+    """
+    safe = _UNSAFE_NAME_CHARS.sub("_", (name or "").strip()).strip()
+    return safe or "_unnamed"
+
+
 class CharacterManager:
     """角色文件管理 + LLM 自动生成。"""
 
@@ -151,7 +173,7 @@ class CharacterManager:
 
     # ---------- 文件操作 ----------
     def _path(self, name: str) -> str:
-        return os.path.join(self.dir, f"{name.strip()}.json")
+        return os.path.join(self.dir, f"{_safe_name(name)}.json")
 
     def exists(self, name: str) -> bool:
         return bool(name) and os.path.exists(self._path(name))

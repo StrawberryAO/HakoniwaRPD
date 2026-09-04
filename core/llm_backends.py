@@ -278,13 +278,28 @@ class OpenAIBackend(LLMBackend):
             raise LLMError(f"云端 API 流式响应中断: {exc}") from exc
 
 
+# 受支持的 LLM 后端标识。新增后端时须同步登记，否则 create_backend 会拒绝创建。
+SUPPORTED_BACKENDS = ("openai", "ollama")
+
+
 def create_backend(cfg: dict, logger=None) -> LLMBackend:
     """根据配置块创建对应后端实例。
 
     Args:
         cfg: 含 "backend" 键的配置块（见 Config.backend_config()）。
+
+    Raises:
+        LLMError: backend 取值不在 SUPPORTED_BACKENDS 内。
+
+    注意：此前未知 backend 会静默回落 OpenAIBackend，把请求发往 DeepSeek 地址——
+    用户把 "ollama" 拼错时既不报错又会消耗 token，故改为显式报错。
     """
     kind = (cfg or {}).get("backend", "openai")
+    if kind not in SUPPORTED_BACKENDS:
+        raise LLMError(
+            f"未知的 LLM 后端：{kind!r}。受支持的取值为 {'、'.join(SUPPORTED_BACKENDS)}，"
+            f"请检查 config.json 中 llm.backend 的配置（注意大小写）。"
+        )
     if kind == "ollama":
         return OllamaBackend(cfg, logger)
     return OpenAIBackend(cfg, logger)

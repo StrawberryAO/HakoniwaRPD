@@ -239,8 +239,12 @@ class PetWindow(QWidget):
 
     def _load_pet_image(self) -> None:
         """加载形象：优先当前角色形象，缺失/空则回退全局默认，最末显示占位。"""
-        self._stop_movie()
+        # 顺序不可调换：必须先让 QLabel 断开对旧 QMovie 的裸指针，再销毁 QMovie。
+        # QMovie 创建时无 QObject 父对象，所有权归 PySide；setMovie() 按 Qt 约定
+        # 不转移所有权，QLabel 仅存裸指针。若先执行 _stop_movie() 置空 Python 引用，
+        # C++ 对象随即析构，而 QLabel 内部指针未清，随后的 clear() 会访问已释放内存。
         self._image_label.clear()
+        self._stop_movie()
         self._image_label.hide()
         self._placeholder.show()
 

@@ -27,7 +27,7 @@
   },
   "chat": {
     "context_ratio": 0.8,
-    "drift_threshold": 0.72,
+    "drift_threshold": 0.52,
     "max_ooc_retries": 1
   },
   "web_search": {
