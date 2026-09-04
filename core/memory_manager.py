@@ -237,12 +237,38 @@ class MemoryManager:
         # L0：最近 40 条消息的工作记忆
         self._short = deque(maxlen=40)
         self._l1 = None
+        self._l0_restored = False
+        self._restore_l0()
+
+    def _restore_l0(self) -> None:
+        """重启/新建后从持久化历史恢复 L0 工作记忆（最近 40 条）。
+
+        L0 原为纯内存态，重启即清空，导致"刚聊过的话题"重启后角色没印象；
+        改从 history_store 恢复最近对话，保证跨重启的短期上下文。
+        """
+        if self._l0_restored:
+            return
+        self._l0_restored = True
+        try:
+            from core import history_store
+            for rec in history_store.load(self.character_name)[-40:]:
+                text = rec.get("text", "")
+                if not text:
+                    continue
+                kind = rec.get("kind")
+                if kind == "user":
+                    self._short.append({"role": "user", "content": text})
+                elif kind in ("char", "initiative"):
+                    self._short.append({"role": "assistant", "content": text})
+        except Exception:
+            pass
 
     # ---------- L0 工作记忆 ----------
     def add_turn(self, role: str, content: str) -> None:
         self._short.append({"role": role, "content": content})
 
     def recent_turns(self, limit: int = None) -> list:
+        self._restore_l0()
         turns = [{"role": t["role"], "content": t["content"]} for t in self._short]
         if limit is not None:
             turns = turns[-limit:]

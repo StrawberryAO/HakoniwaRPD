@@ -126,6 +126,22 @@ def main() -> int:
     logger = setup_logger()
     config = Config("config.json")
 
+    # 缩短 HuggingFace 连接超时，避免首次对话卡在"嵌入模型下载"上（断网时曾卡 ~70s）
+    os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "10")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "20")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_REFETCH", "0")
+    # 后台预热嵌入模型（可选依赖）：提前完成加载/失败标记，显著减少首次对话卡顿
+    import threading as _threading
+
+    def _warm_embed() -> None:
+        try:
+            from core.memory_manager import EmbeddingProvider
+            EmbeddingProvider.get(config, logger).is_available()
+        except Exception:
+            pass
+
+    _threading.Thread(target=_warm_embed, daemon=True).start()
+
     # 可选依赖检测（L1 记忆 / 漂移检测）：缺失时询问并自动安装
     _check_optional_dependencies(app)
 
@@ -151,7 +167,7 @@ def main() -> int:
     # ================= 回调（先定义，后连接信号） =================
     def on_reply(char_name: str, reply: str) -> None:
         """角色回复：显示、状态动画、TTS。"""
-        bubble.append_message(char_name, reply, kind="char")
+        bubble.deliver_reply(char_name, reply)   # 流式气泡留作正式回复 + 落库
         pet.notify_activity()
         pet.set_state("speaking")
         QTimer.singleShot(2200, lambda: pet.set_state("idle"))
@@ -167,6 +183,7 @@ def main() -> int:
         """主动搭话：气泡展示 + 记录 + 语音。"""
         pet.wake_for_initiative()
         pet.show_speech(text)
+        bubble.set_thinking(False)
         bubble.append_message(char_name, text, kind="initiative")
         tts.stop_all()
         try:

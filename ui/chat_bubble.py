@@ -166,7 +166,8 @@ class _MessageItem(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
         outer.setSpacing(1)
-        self._center_label = None   # 居中样式（系统/错误/思考）的文本标签，供流式更新
+        self._center_label = None    # 居中样式（系统/错误）文本标签
+        self._bubble_label = None    # 用户/角色气泡文本标签（供流式更新）
 
         # 时间戳（居中灰色小字）
         if ts:
@@ -193,6 +194,7 @@ class _MessageItem(QWidget):
             bubble.setToolTip(name)
             bubble.setTextFormat(Qt.TextFormat.PlainText)
             bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self._bubble_label = bubble
             if kind == "user":
                 bubble.setStyleSheet(
                     "QLabel { background:%s; color:%s; border-radius:10px;"
@@ -230,9 +232,14 @@ class _MessageItem(QWidget):
         outer.addLayout(row)
 
     def update_text(self, text: str) -> None:
-        """更新居中样式的文本（用于思考流式输出）；非居中消息为 no-op。"""
+        """更新文本：优先更新气泡（流式回复直接冒在角色气泡里），否则更新居中标签。"""
+        if self._bubble_label is not None:
+            self._bubble_label.setText(text)
+            self.updateGeometry()
+            return
         if self._center_label is not None:
             self._center_label.setText(text)
+            self.updateGeometry()
 
 
 class ChatBubble(QWidget):
@@ -270,6 +277,7 @@ class ChatBubble(QWidget):
         self._thinking = False
         self._thinking_item = None
         self._thinking_text = ""
+        self._stream_item = None   # 流式中的角色气泡 item（回复完成后保留）
         self._drag_offset = None
         self._loaded_role = None     # 当前已加载历史消息的角色
 
@@ -530,10 +538,18 @@ class ChatBubble(QWidget):
         else:
             avatar = None
         item = _MessageItem(name, text, kind, self._theme, avatar, ts=ts, parent=self._scroll.widget())
+        # 插入前判断用户是否在底部：新消息会撑大 maximum，插入后再用 maximum-value 判
+        # “在底部”会因差值变大而误判，故必须在插入前捕获跟随意图。
+        was_bottom = self._is_at_bottom()
         # 插到末尾（保留最后的 stretch）
         self._msg_layout.insertWidget(self._msg_layout.count() - 1, item)
-        self._scroll_to_bottom()
+        self._scroll_to_bottom(force=was_bottom)
         return item
+
+    def _is_at_bottom(self) -> bool:
+        """当前滚动条是否位于底部附近（用于插入前捕获跟随意图）。"""
+        bar = self._scroll.verticalScrollBar()
+        return bar.maximum() - bar.value() <= 24
 
     def _current_role(self) -> str:
         """当前对话角色名（用于历史归属）。"""
@@ -581,48 +597,62 @@ class ChatBubble(QWidget):
         self._add_message_item("系统", message, "error")
 
     def set_thinking(self, on: bool) -> None:
-        if on and not self._thinking:
+        # 流式回复直接冒在角色气泡里，不再用居中的"思考"气泡
+        if on:
             self._thinking = True
             self._thinking_text = ""
-            self._thinking_item = self._add_message_item("", "正在输入…", "thinking")
-        elif not on and self._thinking:
+            self._stream_item = None
+        else:
             self._thinking = False
             self._thinking_text = ""
-            if self._thinking_item is not None:
-                self._msg_layout.removeWidget(self._thinking_item)
-                self._thinking_item.deleteLater()
-                self._thinking_item = None
+            self._stream_item = None
 
     def set_thinking_text(self, char_name: str, piece: str) -> None:
-        """思考/回复流式输出：把增量文本实时追加到思考气泡（打字机效果）。"""
-        if not self._thinking or self._thinking_item is None or not piece:
+        """流式回复：逐字追加到角色气泡（打字机），首个 token 创建气泡。"""
+        if not self._thinking or not piece:
             return
         self._thinking_text += piece
-        self._thinking_item.update_text(self._thinking_text)
+        if self._stream_item is None:
+            self._stream_item = self._add_message_item(char_name, piece, "char", ts=time.time())
+        else:
+            self._stream_item.update_text(self._thinking_text)
         self._scroll_to_bottom()
 
     def reset_thinking(self, char_name: str) -> None:
-        """OOC 重试前清空已流式显示的文本，重新从空开始累积。"""
+        """OOC 重试前清空已流式文本，重新从空累积（复用同一气泡）。"""
         if not self._thinking:
             return
         self._thinking_text = ""
-        if self._thinking_item is not None:
-            self._thinking_item.update_text("")
+        if self._stream_item is not None:
+            self._stream_item.update_text("")
 
     def show_tool_event(self, char_name: str, text: str) -> None:
-        """把 Agent 工具活动（如「已调用 memory_search(…)」）追加到思考气泡。
-
-        思考气泡是临时的：工具事件与流式内容一起累积，回复完成时整体移除，
-        正式回复仍由 append_message 展示，不会混入工具说明。
-        """
-        if not self._thinking or self._thinking_item is None or not text:
+        """把 Agent 工具活动（如「已调用 memory_search(…)」）追加到当前流式气泡。"""
+        if not self._thinking or not text:
             return
-        self._thinking_text = self._thinking_text.rstrip("\n")
-        if self._thinking_text:
-            self._thinking_text += "\n"
-        self._thinking_text += f"· {text}"
-        self._thinking_item.update_text(self._thinking_text)
+        prefix = self._thinking_text.rstrip("\n")
+        self._thinking_text = (prefix + ("\n" if prefix else "") + f"· {text}")
+        if self._stream_item is None:
+            self._stream_item = self._add_message_item(char_name, self._thinking_text, "char", ts=time.time())
+        else:
+            self._stream_item.update_text(self._thinking_text)
         self._scroll_to_bottom()
+
+    def deliver_reply(self, char_name: str, reply: str) -> None:
+        """回复完成落定：若已流式冒为角色气泡则保留并落库；否则直接显示并落库。
+
+        Args:
+            char_name: 角色名。
+            reply: 完整回复文本。
+        """
+        stream_used = self._stream_item is not None
+        self.set_thinking(False)
+        if not reply:
+            return
+        if stream_used:
+            history_store.append(self._current_role() or char_name, char_name, "char", reply, time.time())
+        else:
+            self.append_message(char_name, reply, kind="char")
 
     def set_status(self, data) -> None:
         """接收情绪/羁绊状态并渲染。
@@ -665,14 +695,16 @@ class ChatBubble(QWidget):
         self._loaded_role = None
 
     def _scroll_to_bottom(self, force: bool = False) -> None:
+        # 消息插入后 QScrollArea 内容高度要一两次事件循环才更新，滚动也推迟并在
+        # 布局稳定后再补一次；force 来自「插入前在底部」的捕获，确保真正到底。
         QTimer.singleShot(0, lambda: self._do_scroll_to_bottom(force))
+        QTimer.singleShot(120, lambda: self._do_scroll_to_bottom(force))
 
     def _do_scroll_to_bottom(self, force: bool = False) -> None:
-        """跟随滚动：默认仅当用户处于底部附近时滚到最底（不打断向上翻阅）；
-        force=True 强制滚到底（用于用户主动发送消息后，确保能看到自己刚发的消息）。"""
+        """跟随滚动：force（插入前在底部/用户主动发送）或当前位于底部附近时滚到底；
+        否则用户已上翻，不打扰。"""
         bar = self._scroll.verticalScrollBar()
-        at_bottom = bar.maximum() - bar.value() <= 24   # 距底部 24px 内视为"在底部"
-        if force or at_bottom:
+        if force or (bar.maximum() - bar.value() <= 24):
             bar.setValue(bar.maximum())
 
     # ---------- 头像 ----------

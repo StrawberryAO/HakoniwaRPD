@@ -22,6 +22,7 @@ Hakoniwa(“箱庭”) —— 桌面上一个小小的、只属于你和角色�
 | 漂移检测 | 人设锚点 + 余弦相似度，偏离角色时自动重写（防 OOC） |
 | 主动搭话 | 空闲时角色主动找你说话，台词库 / LLM 生成，聊天气泡 + 可选语音 |
 | 回复风格 | 用户可选“简洁日常”或“丰富长文”，控制对话篇幅 |
+| Agent 工具调用 | 角色可自主调用工具：回忆过去对话(`memory_search`)、查当前时间、联网搜索、查天气(免 key)、计算；仅 OpenAI 兼容后端，Ollama 下自动忽略 |
 | TTS 语音 | GPT-SoVITS 合成语音（可选，需自行部署服务） |
 | 视觉自定义 | 宠物形象、双方头像、聊天背景均可自定义图片 |
 
@@ -88,6 +89,22 @@ exe 首次启动若检测到 L1 记忆 / 漂移检测依赖缺失，会**询问�
   背景铺底、消息浮于其上；留空则无背景。
 - **窗口大小**：拖动缩放后自动记住（`window.chat_w/h`），下次启动恢复。
 
+## 🤖 Agent 工具调用（角色级开关）
+
+在 设置 → 角色管理 → 勾选「允许该角色调用工具」后，角色可在对话中**按需自主调用**工具（而不是每次都强制注入记忆）：
+
+| 工具 | 说明 |
+|------|------|
+| `memory_search` | 回忆该角色与你的过去对话（Agentic 检索，可多关键词、结果带相关度） |
+| `get_time` | 获取当前日期时间（含星期） |
+| `web_search` | 联网搜索实时资料（跟随全局“联网搜索”开关） |
+| `weather_query` | 查询指定城市实时天气（wttr.in，免 key，失败友好降级） |
+| `calculator` | 安全计算算术表达式（AST 白名单，拒绝危险表达式） |
+
+- 仅 **OpenAI 兼容后端**（DeepSeek 等）支持；Ollama 下工具开关自动忽略，不影响正常聊天。
+- 每轮对话记忆检索有预算上限（默认 2 次），防止检索空转/浪费 token。
+- 工具开关默认关，每个角色独立；无需额外 API Key（天气/时间/搜索均为免鉴权接口）。
+
 ## ⚙️ 常用配置（config.json）
 
 ```jsonc
@@ -141,8 +158,9 @@ Hakoniwa/
 ├── characters/              # 角色 JSON 存放目录
 ├── core/
 │   ├── character_manager.py # 角色自动生成 / 保存 / 加载 / 编辑 / 修改
-│   ├── chat_engine.py       # 统一 LLM 调度、消息拼装、上下文裁剪、OOC 重试
-│   ├── llm_backends.py      # OllamaBackend / OpenAIBackend（含思考模式）
+│   ├── chat_engine.py       # 统一 LLM 调度、消息拼装、上下文裁剪、OOC 重试、Agent 工具循环
+│   ├── tools.py             # Agent 工具注册表（memory_search / get_time / web_search / weather_query / calculator）
+│   ├── llm_backends.py      # OllamaBackend / OpenAIBackend（含思考模式与流式工具调用）
 │   ├── emotion_system.py    # PAD 情绪、羁绊、语气指令
 │   ├── memory_manager.py    # L0 工作记忆 + L1 ChromaDB（可选）
 │   ├── drift_detector.py    # 锚点生成、余弦相似度、OOC 判定
