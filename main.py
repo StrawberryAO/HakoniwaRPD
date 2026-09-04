@@ -217,6 +217,7 @@ def main() -> int:
     engine.state_changed.connect(lambda state: bubble.set_thinking(state == "thinking"))
     engine.thinking_chunk.connect(bubble.set_thinking_text)
     engine.thinking_reset.connect(bubble.reset_thinking)
+    engine.tool_event.connect(bubble.show_tool_event)
     engine.status_updated.connect(bubble.set_status)
     engine.initiative_text.connect(on_initiative_text)
     tts.failed.connect(lambda msg: bubble.show_error("语音播报不可用：" + msg))

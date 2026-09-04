@@ -9,7 +9,7 @@
 import copy
 import os
 
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QMovie, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
@@ -96,6 +96,31 @@ class SettingsDialog(QDialog):
         self._build_char_tab()
         self._load_global()
         self._refresh_char_list()
+
+        # 组合框滚轮拦截：滚动页面时指针若落在下拉框上，改为滚动所在区域，不切换选中项
+        # （否则像「角色独立后端」这类 combo 会把滚轮当成切换选中项，误切后端）
+        for combo in self.findChildren(QComboBox):
+            combo.installEventFilter(self)
+
+    def _scroll_area_for(self, widget):
+        """向上找到包住该控件的 QScrollArea（无则返回 None）。"""
+        p = widget.parent()
+        while p is not None:
+            if isinstance(p, QScrollArea):
+                return p
+            p = p.parent()
+        return None
+
+    def eventFilter(self, obj, event):
+        # 滚轮落在组合框上时，转发给所在滚动区滚动页面，避免误切换下拉项
+        if isinstance(obj, QComboBox) and event.type() == QEvent.Type.Wheel:
+            scroll = self._scroll_area_for(obj)
+            if scroll is not None:
+                delta = event.angleDelta().y() or event.pixelDelta().y()
+                sb = scroll.verticalScrollBar()
+                sb.setValue(max(sb.minimum(), min(sb.maximum(), sb.value() - delta)))
+                return True
+        return super().eventFilter(obj, event)
 
     # ==================================================================
     # 全局设置
@@ -586,6 +611,15 @@ class SettingsDialog(QDialog):
         backend_layout.addRow("Ollama 模型", self._char_ollama_model)
         form.addRow(backend_box)
 
+        # Agent 工具调用（实验性，需 OpenAI 兼容后端）
+        self._char_tools_enabled = QCheckBox("允许该角色调用工具：回忆过去的对话（memory_search）、查询当前时间、联网搜索")
+        self._char_tools_enabled.setToolTip(
+            "开启后角色可以在对话中自主决定何时查记忆 / 查时间 / 联网。\n"
+            "仅 OpenAI 兼容后端（DeepSeek 等）支持；Ollama 下自动忽略，不影响正常聊天。\n"
+            "联网搜索跟随全局设置「联网搜索」开关。"
+        )
+        form.addRow(self._char_tools_enabled)
+
         # 锚点
         self._anchor_label = QLabel("锚点：未生成")
         self._anchor_label.setStyleSheet("color:%s;" % self._theme.muted)
@@ -716,6 +750,7 @@ class SettingsDialog(QDialog):
         backend = char.backend or {}
         idx = self._char_backend_combo.findData(backend.get("backend", ""))
         self._char_backend_combo.setCurrentIndex(max(0, idx))
+        self._char_tools_enabled.setChecked(bool(char.tools_enabled))
         oai = (backend.get("openai") or {}) if isinstance(backend, dict) else {}
         oll = (backend.get("ollama") or {}) if isinstance(backend, dict) else {}
         self._char_api_key.setText(oai.get("api_key", ""))
@@ -778,6 +813,7 @@ class SettingsDialog(QDialog):
         base.avatar = self._char_avatar_edit.text().strip()
         base.pet_image = self._char_pet_image_edit.text().strip()
         base.backend = self._collect_char_backend()
+        base.tools_enabled = self._char_tools_enabled.isChecked()
         # 开发者模式：情绪/羁绊数值写回
         base.emotion["pad"] = [
             round(self._dev_pad_p.value(), 4),
@@ -864,6 +900,7 @@ class SettingsDialog(QDialog):
         self._char_pet_image_edit.clear()
         self._char_pet_image_preview.clear()
         self._char_backend_combo.setCurrentIndex(0)
+        self._char_tools_enabled.setChecked(False)
         self._anchor_label.setText("锚点：未生成")
         self._reset_dev_values()
         self._char_list.clearSelection()

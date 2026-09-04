@@ -15,8 +15,10 @@
 - 角色漂移检测：回复生成后做余弦相似度校验，OOC 则追加系统消息重试（默认最多 1 次）。
 """
 import copy
+import datetime
 import random
 import re
+import uuid
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -25,6 +27,17 @@ from core.drift_detector import DriftDetector
 from core.emotion_system import BondSystem, EmotionSystem
 from core.llm_backends import create_backend
 from core.memory_manager import MemoryManager
+from core.tools import (
+    SCHEMA_CALCULATOR,
+    SCHEMA_GET_TIME,
+    SCHEMA_MEMORY_SEARCH,
+    SCHEMA_WEATHER,
+    SCHEMA_WEB_SEARCH,
+    Tool,
+    ToolRegistry,
+    format_tool_call_summary,
+    safe_eval,
+)
 from utils.logger import get_logger
 
 # L2 核心记忆前缀（不可裁剪部分）
@@ -35,6 +48,25 @@ MEMORY_PREFIX = "【相关记忆】"
 WORLDBOOK_PREFIX = "【世界观参考】"
 # OOC 重试系统消息
 OOC_RETRY_MESSAGE = "上一句回复偏离了角色设定，请重新生成一句更符合角色性格的回复。"
+
+# 启用工具调用时，追加到 system prompt 尾部的能力说明（通用措辞，不枚举具体工具）
+TOOL_HINT = (
+    "\n【可用能力】你可以调用工具来更好地回应，例如：回忆与该用户过去的对话、"
+    "查询当前日期时间、联网搜索资料。当用户提及过去发生的事、需要具体时间或"
+    "外部信息时，自然地调用工具；不需要时就正常聊天，不要为了调用而调用。"
+)
+
+# 单次对话中工具调用-回填的最大轮数（防模型空转死循环）
+MAX_TOOL_ROUNDS = 4
+
+# 单次对话中 memory_search（记忆检索）的最大调用次数，防检索空转/过度消耗
+MAX_MEMORY_SEARCH_PER_CHAT = 2
+
+
+def _now_text() -> str:
+    """当前日期时间文本（供 get_time 工具）。"""
+    weekday = "一二三四五六日"[datetime.datetime.now().weekday()]
+    return datetime.datetime.now().strftime(f"%Y-%m-%d %H:%M:%S（星期{weekday}）")
 
 # 回复风格指令（用户可在全局设置选择）
 CHAT_STYLES = {
@@ -73,6 +105,7 @@ class ChatEngine(QObject):
     initiative_text = Signal(str, str)   # (character_name, text)
     thinking_chunk = Signal(str, str)    # (character_name, 增量文本) 对话流式输出
     thinking_reset = Signal(str)         # character_name，OOC 重试前清空已显示文本
+    tool_event = Signal(str, str)        # (character_name, 工具调用摘要) Agent 工具活动
 
     def __init__(self, config, manager, logger=None):
         super().__init__()
@@ -165,25 +198,32 @@ class ChatEngine(QObject):
         bond.update(user_text, "user")
 
         memory = self.get_memory(char_name)
-        messages = self.assemble_messages(char, user_text, memory, emotion, bond)
 
         backend = self._get_backend(char)
+        tools_enabled = bool(getattr(char, "tools_enabled", False)) and backend.name == "openai"
+        # Agentic RAG：工具开启时入口不再强制注入 L1（交给 memory_search 工具按需检索，
+        # 避免每次重复注入 + 省 token）；工具关闭时保留经典 RAG 兜底（每次都 recall top3 注入）。
+        inject_memory = not tools_enabled
+        messages = self.assemble_messages(char, user_text, memory, emotion, bond, inject_memory=inject_memory)
+
         self.log.info("[%s] 请求 LLM (%s) ...", char_name, backend.name)
         # 聊天默认关闭思考模式（更快、更口语化、省 token），可在全局设置开启
         thinking_chat = bool(self.config.get("llm", "thinking_chat", default=False))
-        from core.usage_tracker import add_usage
 
-        def _generate(msgs):
-            # 流式生成：逐块把增量文本发到 UI（打字机效果），失败/空时回退非流式
-            def on_chunk(piece):
-                self.thinking_chunk.emit(char_name, piece)
-            reply = backend.chat_stream(msgs, thinking=thinking_chat, on_chunk=on_chunk)
-            if not reply.strip():
-                reply = backend.chat(msgs, thinking=thinking_chat)
-            add_usage(backend.last_usage)
-            return reply
+        # ---- Agent 工具调用（实验性）：仅 OpenAI 兼容后端 + 角色开启时启用 ----
+        registry = None
+        tools = None
+        search_budget = {"memory_search": MAX_MEMORY_SEARCH_PER_CHAT}
+        if tools_enabled:
+            registry = self._build_tool_registry(char_name, search_budget)
+            tools = registry.schemas(list(getattr(char, "tool_names", None) or []))
+            if tools:
+                sys0 = messages[0]
+                if sys0.get("role") == "system" and "可以调用工具" not in str(sys0.get("content", "")):
+                    messages[0] = {"role": "system", "content": str(sys0.get("content", "")) + TOOL_HINT}
+                self.log.info("[%s] 已启用工具调用（%d 个工具）", char_name, len(tools))
 
-        reply = _generate(messages)
+        reply = self._agent_generate(char_name, messages, backend, thinking_chat, tools, registry)
 
         # ---- 角色漂移检测（事后校验 + 重试）----
         anchor = char.anchor_vector
@@ -210,7 +250,7 @@ class ChatEngine(QObject):
             self.thinking_reset.emit(char_name)
             messages.append({"role": "assistant", "content": reply})
             messages.append({"role": "system", "content": OOC_RETRY_MESSAGE})
-            reply = _generate(messages)
+            reply = self._agent_generate(char_name, messages, backend, thinking_chat, tools, registry)
 
         # ---- 情绪/羁绊更新并持久化 ----
         emotion.update(reply, "assistant")
@@ -229,6 +269,203 @@ class ChatEngine(QObject):
             "bond": dict(char.bond),
         })
         self.reply_ready.emit(char_name, reply)
+
+    # ---------- Agent 工具调用（Phase 1） ----------
+    def _build_tool_registry(self, char_name: str, search_budget: dict = None) -> ToolRegistry:
+        """按角色构建内置工具注册表（处理器闭包捕获角色名）。
+
+        Args:
+            search_budget: {"memory_search": 剩余次数}。当次对话的检索预算（None 不限制）。
+        """
+        registry = ToolRegistry()
+
+        def _memory_search(args: dict) -> str:
+            # 兼容旧版单 query 调用，支持新版 queries 数组
+            raw_queries = (args or {}).get("queries") or []
+            if isinstance(raw_queries, str):
+                raw_queries = [raw_queries]
+            single = str((args or {}).get("query") or "").strip()
+            if single:
+                raw_queries = [single] + list(raw_queries)
+            queries = [str(q).strip() for q in raw_queries if str(q).strip()][:4]
+            if not queries:
+                return "[memory_search] 请提供 queries 数组（要回忆的关键词）。"
+
+            # 检索预算：超出则提示收敛，避免空转
+            if search_budget is not None:
+                left = int(search_budget.get("memory_search", 0) or 0)
+                if left <= 0:
+                    return "[memory_search] 本次对话已用尽记忆检索次数，请基于已有信息或用一个最关键的关键词继续。"
+                search_budget["memory_search"] = left - 1
+
+            try:
+                top_k = int((args or {}).get("top_k", 3) or 3)
+            except (TypeError, ValueError):
+                top_k = 3
+            top_k = max(1, min(top_k, 8))
+
+            # 多查询分别检索并合并去重（按内容），实现一次调用里的"多路召回"
+            seen = set()
+            merged = []
+            for q in queries:
+                hits = self.get_memory(char_name).recall(q, top_k=top_k)
+                for hit in hits:
+                    content = str(hit.get("content") or "").strip()
+                    if not content or content in seen:
+                        continue
+                    seen.add(content)
+                    merged.append({
+                        "content": content,
+                        "score": hit.get("score"),
+                        "query": q,
+                    })
+            if not merged:
+                return (
+                    "[memory_search] 长期记忆里没有直接相关的记录。"
+                    "你可以把用户含糊的指代改写为更具体的人名/事件/约定再查一次，或基于已有信息诚实回应。"
+                )
+            # 结果按分数降序，并附时间提示给模型自行判断相关性（结果评审交给模型）
+            merged.sort(key=lambda x: x["score"] or 0, reverse=True)
+            lines = [f"找到 {len(merged)} 条相关记忆（按相关性排序，可据此回答；如细节不足可用更具体的词再查）："]
+            for i, m in enumerate(merged, 1):
+                content = m["content"][:500]
+                score = m["score"]
+                line = f"{i}. {content}"
+                if score is not None:
+                    line += f"（相关度 {float(score):.2f}）"
+                lines.append(line)
+            return "\n".join(lines)
+
+        registry.register(Tool(
+            "memory_search",
+            "回忆你与该用户过去的对话内容（长期记忆，Agentic 检索）。当用户提及过去发生的事、你们的约定或共同经历时调用。"
+            "可一次给出多个检索关键词（不同说法/实体）以获得更完整回忆；结果不足时可换角度再查。",
+            SCHEMA_MEMORY_SEARCH,
+            _memory_search,
+        ))
+
+        registry.register(Tool(
+            "get_time",
+            "获取当前的日期与时间（含星期）。当对话涉及时间、日程、节日时调用。",
+            SCHEMA_GET_TIME,
+            lambda _args: f"当前时间：{_now_text()}",
+        ))
+
+        def _weather(args: dict) -> str:
+            city = str((args or {}).get("city") or "").strip()
+            if not city:
+                return "[weather_query] 请提供 city 城市名。"
+            import urllib.parse
+
+            import requests
+            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=%l:+%c+%t（体感%f）湿度%h+风速%w&lang=zh"
+            try:
+                resp = requests.get(url, timeout=8, headers={"User-Agent": "curl/8.0"})
+                if resp.status_code == 200 and resp.text.strip():
+                    return f"{city} 天气：{resp.text.strip()}"
+                return "[weather_query] 天气服务暂不可用或未找到该城市。"
+            except Exception:
+                return "[weather_query] 天气服务请求失败，请稍后再试。"
+
+        def _calculator(args: dict) -> str:
+            expr = str((args or {}).get("expression") or "").strip()
+            if not expr:
+                return "[calculator] 请提供 expression 表达式。"
+            try:
+                val = safe_eval(expr)
+                if isinstance(val, float) and val.is_integer():
+                    val = int(val)
+                return f"{expr} = {val}"
+            except ZeroDivisionError:
+                return "[calculator] 除数为零，无法计算。"
+            except Exception as exc:
+                return f"[calculator] 表达式无效（{type(exc).__name__}）。"
+
+        registry.register(Tool(
+            "weather_query",
+            "查询指定城市的实时天气（温度、体感、湿度、风力）。当用户询问天气时调用。",
+            SCHEMA_WEATHER,
+            _weather,
+        ))
+        registry.register(Tool(
+            "calculator",
+            "安全计算算术表达式（+ - * / % ( ) **）。当用户要求算数或单位换算时调用。",
+            SCHEMA_CALCULATOR,
+            _calculator,
+        ))
+
+        # 联网搜索工具跟随全局 web_search.enabled 配置（默认开）
+        if bool((self.config.get("web_search", default={}) or {}).get("enabled", True)):
+
+            def _web_search(args: dict) -> str:
+                query = str((args or {}).get("query") or "").strip()
+                if not query:
+                    return "[web_search] 缺少 query 参数。"
+                from core.web_search import WebSearcher, format_references
+                results = WebSearcher(self.config, self.log).search(query)
+                block = format_references(results, max_items=5)
+                return block or "[web_search] 没有搜到结果（网络不可用或关键词无结果）。"
+
+            registry.register(Tool(
+                "web_search",
+                "联网搜索实时资料。当用户询问需要最新/外部信息（如新闻、现实事件、人物资料）时调用。",
+                SCHEMA_WEB_SEARCH,
+                _web_search,
+            ))
+
+        return registry
+
+    def _agent_generate(self, char_name, messages, backend, thinking_chat, tools, registry) -> str:
+        """Agent 生成循环：LLM <-> 工具执行，直到模型不再请求工具或达轮次上限。
+
+        每轮 LLM 流式输出经 thinking_chunk 实时推送 UI；工具调用经 tool_event 上报。
+        返回最终文本回复（供漂移检测 / 情绪 / 记忆落库使用）。
+        """
+        from core.usage_tracker import add_usage
+
+        def on_chunk(piece: str) -> None:
+            self.thinking_chunk.emit(char_name, piece)
+
+        last_content = ""
+        for _round in range(MAX_TOOL_ROUNDS):
+            turn = backend.chat_agent_stream(
+                messages, tools=tools, thinking=thinking_chat, on_chunk=on_chunk,
+            )
+            if turn.usage:
+                add_usage(turn.usage)
+            last_content = turn.content
+
+            if not turn.wants_tools():
+                if last_content.strip():
+                    return last_content
+                # 流式偶发返回空且未请求工具：回退一次非流式普通调用
+                self.thinking_reset.emit(char_name)
+                fallback = backend.chat(messages, thinking=thinking_chat)
+                add_usage(backend.last_usage)
+                return fallback.strip() or "（…角色一时没有说出话来。）"
+
+            # 模型请求工具：先回填 assistant 消息（含 tool_calls），再逐个执行
+            if turn.assistant_message:
+                messages.append(turn.assistant_message)
+            executed = 0
+            for tc in turn.tool_calls:
+                name = (tc.get("name") or "").strip()
+                if not name:
+                    continue
+                executed += 1
+                call_id = tc.get("id") or f"call_{uuid.uuid4().hex[:8]}"
+                arguments = tc.get("arguments") or {}
+                output = registry.run(name, arguments) if registry else f"[工具错误] 未启用工具注册表。"
+                summary = format_tool_call_summary(name, arguments)
+                self.log.info("[%s] 工具调用 %s -> %d 字", char_name, summary, len(output))
+                self.tool_event.emit(char_name, f"已调用 {summary}")
+                messages.append({"role": "tool", "tool_call_id": call_id, "content": output[:1500]})
+            if executed == 0:
+                return last_content or "（…角色一时没有说出话来。）"
+
+        self.log.warning("[%s] 工具调用达到 %d 轮上限，结束本轮", char_name, MAX_TOOL_ROUNDS)
+        self.tool_event.emit(char_name, f"（工具调用已达 {MAX_TOOL_ROUNDS} 轮上限，结束）")
+        return last_content or "（…角色一时没有说出话来。）"
 
     # ---------- 后端 ----------
     def _get_backend(self, char):
@@ -284,12 +521,20 @@ class ChatEngine(QObject):
         return "\n".join(lines)
 
     def assemble_messages(self, char, user_text: str, memory: MemoryManager,
-                          emotion: EmotionSystem, bond: BondSystem) -> list:
-        """组装最终消息列表（含 L1 记忆检索、Worldbook 命中、语气指令与上下文裁剪）。"""
+                          emotion: EmotionSystem, bond: BondSystem,
+                          inject_memory: bool = True) -> list:
+        """组装最终消息列表（含 L1 记忆检索、Worldbook 命中、语气指令与上下文裁剪）。
+
+        Args:
+            inject_memory: 是否在入口强制注入 L1 记忆（经典 RAG 兜底）。当角色启用工具时
+                置 False，检索交给 memory_search 工具按需进行（Agentic RAG），避免重复注入。
+        """
         tone = emotion.tone_instruction(bond.values())
         worldbook_hits = self.worldbook_match(char, user_text)
-        l1_hits = memory.recall(user_text, top_k=3)
-        l1_texts = [m["content"] for m in l1_hits]
+        l1_texts = []
+        if inject_memory:
+            l1_hits = memory.recall(user_text, top_k=3)
+            l1_texts = [m["content"] for m in l1_hits]
 
         system = self._build_system(char, tone, worldbook_hits, l1_texts)
         # 注入"回复风格"指令（简洁日常 / 丰富长文），由用户在全局面板选择

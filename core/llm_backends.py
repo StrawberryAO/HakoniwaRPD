@@ -15,6 +15,28 @@ class LLMError(Exception):
     """LLM 调用失败（网络、鉴权、解析等）。"""
 
 
+class AgentTurn:
+    """一次 Agent 回合的结果：文本回复 + 工具调用（OpenAI 兼容 function calling）。
+
+    Attributes:
+        content: 模型文本内容（工具轮通常为空）。
+        tool_calls: [{"id", "name", "arguments": dict, "raw_arguments": str}]。
+        usage: 本次请求 token 用量（后端未返回时为 None）。
+        assistant_message: 完整 assistant 消息（含 tool_calls，用于回填 messages）。
+    """
+
+    def __init__(self, content: str = "", tool_calls: list = None, usage: dict = None,
+                 assistant_message: dict = None):
+        self.content = content or ""
+        self.tool_calls = tool_calls or []
+        self.usage = usage
+        self.assistant_message = assistant_message
+
+    def wants_tools(self) -> bool:
+        """本轮是否请求调用工具。"""
+        return bool(self.tool_calls)
+
+
 class LLMBackend(abc.ABC):
     """LLM 后端基类。"""
 
@@ -52,6 +74,24 @@ class LLMBackend(abc.ABC):
         if on_chunk and text:
             on_chunk(text)
         return text
+
+    def chat_agent_stream(self, messages, tools=None, temperature: float = 0.8,
+                          max_tokens: int = None, thinking: bool = False,
+                          on_chunk=None) -> AgentTurn:
+        """Agent 回合的流式调用（tools 存在时返回可回填的工具调用）。
+
+        子类未实现时退化为普通对话（tools 被忽略，无害降级）；
+        引擎层只对 OpenAI 兼容后端传 tools，Ollama 走此兜底，行为与现状一致。
+        """
+        text = self.chat(messages, temperature=temperature, max_tokens=max_tokens,
+                         thinking=thinking)
+        if on_chunk and text:
+            on_chunk(text)
+        return AgentTurn(
+            content=text,
+            usage=self.last_usage,   # chat() 内部已填充；保证用量统计不丢
+            assistant_message={"role": "assistant", "content": text or None},
+        )
 
 
 class OllamaBackend(LLMBackend):
@@ -276,6 +316,156 @@ class OpenAIBackend(LLMBackend):
             return "".join(collected).strip()
         except requests.RequestException as exc:
             raise LLMError(f"云端 API 流式响应中断: {exc}") from exc
+
+    def chat_agent_stream(self, messages, tools=None, temperature: float = 0.8,
+                          max_tokens: int = None, thinking: bool = False,
+                          on_chunk=None) -> AgentTurn:
+        """OpenAI 兼容的流式 Agent 回合：tools 传入时解析流式 tool_calls 增量。
+
+        - content 分片照常逐块回调 on_chunk（打字机效果）；
+        - tool_calls 的 id/name/arguments 分片按 index 合并拼接；
+        - 返回 AgentTurn（含可回填 messages 的 assistant_message）。
+        """
+        base = (self.cfg.get("base_url") or "https://api.deepseek.com/v1").rstrip("/")
+        url = f"{base}/chat/completions"
+        api_key = self.cfg.get("api_key") or ""
+        model = self.cfg.get("model") or "deepseek-chat"
+        timeout = float(self.cfg.get("timeout", 90))
+
+        if not api_key:
+            raise LLMError("未配置 API Key，请在 设置 -> 全局设置 中填写。")
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+            "thinking": {"type": "enabled" if thinking else "disabled"},
+        }
+        if tools:
+            payload["tools"] = tools
+        if max_tokens:
+            payload["max_tokens"] = int(max_tokens)
+
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=timeout, stream=True)
+        except requests.RequestException as exc:
+            raise LLMError(f"云端 API 请求失败（{base}）: {exc}") from exc
+        if resp.status_code != 200:
+            raise LLMError(f"云端 API 返回 HTTP {resp.status_code}: {resp.text[:300]}")
+
+        resp.encoding = "utf-8"
+        try:
+            content, tool_calls, usage = self._consume_agent_sse(
+                resp.iter_lines(decode_unicode=True), on_chunk
+            )
+        except requests.RequestException as exc:
+            raise LLMError(f"云端 API 流式响应中断: {exc}") from exc
+
+        self.last_usage = usage
+        assistant_message = {"role": "assistant", "content": content or None}
+        if tool_calls:
+            assistant_message["tool_calls"] = [
+                {
+                    "id": c["id"] or f"call_{idx}",
+                    "type": "function",
+                    "function": {"name": c["name"], "arguments": c["raw_arguments"] or "{}"},
+                }
+                for idx, c in enumerate(tool_calls)
+            ]
+        return AgentTurn(
+            content=content,
+            tool_calls=tool_calls,
+            usage=usage,
+            assistant_message=assistant_message,
+        )
+
+    @staticmethod
+    def _consume_agent_sse(lines, on_chunk=None):
+        """解析 OpenAI 兼容的 SSE 行流（含流式 tool_calls 增量）。
+
+        Args:
+            lines: 已 decode 的文本行迭代器（含 "data: " 前缀）。
+            on_chunk: content 分片回调。
+
+        Returns:
+            (content, tool_calls, usage)：
+                tool_calls 形如 [{"index","id","name","arguments":dict,"raw_arguments":str}]。
+        纯函数、无网络，便于离线单测。
+        """
+        collected = []
+        tc_acc = {}          # index -> {"id": str, "name": str, "arguments": str}
+        usage = None
+        for line in lines:
+            if not line:
+                continue
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = obj.get("choices") or []
+            if not choices:
+                if obj.get("usage"):
+                    usage = {
+                        "prompt_tokens": int(obj["usage"].get("prompt_tokens", 0) or 0),
+                        "completion_tokens": int(obj["usage"].get("completion_tokens", 0) or 0),
+                    }
+                continue
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                collected.append(piece)
+                if on_chunk:
+                    on_chunk(piece)
+            for t in delta.get("tool_calls") or []:
+                try:
+                    idx = int(t.get("index", 0))
+                except (TypeError, ValueError):
+                    idx = 0
+                slot = tc_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if t.get("id"):
+                    slot["id"] = t["id"]
+                fn = t.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+            if choices[0].get("finish_reason"):
+                if obj.get("usage"):
+                    usage = {
+                        "prompt_tokens": int(obj["usage"].get("prompt_tokens", 0) or 0),
+                        "completion_tokens": int(obj["usage"].get("completion_tokens", 0) or 0),
+                    }
+
+        content = "".join(collected).strip()
+        tool_calls = []
+        for idx in sorted(tc_acc):
+            slot = tc_acc[idx]
+            raw = slot["arguments"]
+            try:
+                arguments = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                arguments = {}
+            if not isinstance(arguments, dict):
+                arguments = {}
+            tool_calls.append({
+                "index": idx,
+                "id": slot["id"],
+                "name": slot["name"],
+                "arguments": arguments,
+                "raw_arguments": raw,
+            })
+        return content, tool_calls, usage
 
 
 # 受支持的 LLM 后端标识。新增后端时须同步登记，否则 create_backend 会拒绝创建。

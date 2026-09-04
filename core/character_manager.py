@@ -74,6 +74,10 @@ class Character:
     )
     # 独立后端设置（可选）：{"backend": "openai"|"ollama", "openai": {...}, "ollama": {...}}
     backend: Optional[dict] = None
+    # Agent 工具调用开关（实验性，需 OpenAI 兼容后端；Ollama 自动忽略）
+    tools_enabled: bool = False
+    # 工具白名单（空列表 = 全部内置工具；非空则只启用列出的工具）
+    tool_names: list = field(default_factory=list)
     # GPT-SoVITS 语音包文件夹（可选）
     tts_folder: str = ""
     # 角色头像：图片路径（可选，留空显示圆形占位）
@@ -98,6 +102,8 @@ class Character:
             "emotion": self.emotion,
             "bond": self.bond,
             "backend": self.backend,
+            "tools_enabled": self.tools_enabled,
+            "tool_names": self.tool_names,
             "tts_folder": self.tts_folder,
             "avatar": self.avatar,
             "pet_image": self.pet_image,
@@ -131,6 +137,10 @@ class Character:
         self.worldbook = [w for w in self.worldbook if isinstance(w, dict)]
         if not isinstance(self.backend, dict):
             self.backend = None
+        self.tools_enabled = bool(self.tools_enabled)
+        if not isinstance(self.tool_names, list):
+            self.tool_names = [str(x) for x in self.tool_names] if self.tool_names else []
+        self.tool_names = [str(x).strip() for x in self.tool_names if str(x).strip()]
         if not isinstance(self.anchor_vector, list):
             self.anchor_vector = None
         if not isinstance(self.avatar, str):

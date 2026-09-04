@@ -510,6 +510,7 @@ class ChatBubble(QWidget):
         m = re.match(r"^@([^\s@：:]+)[\s：:]*", text)
         label = f"你 → @{m.group(1)}" if m and self.manager.exists(m.group(1)) else "你"
         self.append_message(label, text, kind="user")
+        self._scroll_to_bottom(force=True)   # 发送后强制滚到底，确保看到自己刚发的消息
         self._input.clear()
         self.send_requested.emit(text)
 
@@ -608,6 +609,21 @@ class ChatBubble(QWidget):
         if self._thinking_item is not None:
             self._thinking_item.update_text("")
 
+    def show_tool_event(self, char_name: str, text: str) -> None:
+        """把 Agent 工具活动（如「已调用 memory_search(…)」）追加到思考气泡。
+
+        思考气泡是临时的：工具事件与流式内容一起累积，回复完成时整体移除，
+        正式回复仍由 append_message 展示，不会混入工具说明。
+        """
+        if not self._thinking or self._thinking_item is None or not text:
+            return
+        self._thinking_text = self._thinking_text.rstrip("\n")
+        if self._thinking_text:
+            self._thinking_text += "\n"
+        self._thinking_text += f"· {text}"
+        self._thinking_item.update_text(self._thinking_text)
+        self._scroll_to_bottom()
+
     def set_status(self, data) -> None:
         """接收情绪/羁绊状态并渲染。
 
@@ -648,15 +664,15 @@ class ChatBubble(QWidget):
         self._clear_message_area()
         self._loaded_role = None
 
-    def _scroll_to_bottom(self) -> None:
-        QTimer.singleShot(0, self._do_scroll_to_bottom)
+    def _scroll_to_bottom(self, force: bool = False) -> None:
+        QTimer.singleShot(0, lambda: self._do_scroll_to_bottom(force))
 
-    def _do_scroll_to_bottom(self) -> None:
-        """跟随滚动：仅当用户当前处于消息列表底部附近时，自动滚到最底端阅读最新消息；
-        若用户已向上翻阅则不打扰（保持当前阅读位置）。"""
+    def _do_scroll_to_bottom(self, force: bool = False) -> None:
+        """跟随滚动：默认仅当用户处于底部附近时滚到最底（不打断向上翻阅）；
+        force=True 强制滚到底（用于用户主动发送消息后，确保能看到自己刚发的消息）。"""
         bar = self._scroll.verticalScrollBar()
         at_bottom = bar.maximum() - bar.value() <= 24   # 距底部 24px 内视为"在底部"
-        if at_bottom:
+        if force or at_bottom:
             bar.setValue(bar.maximum())
 
     # ---------- 头像 ----------
